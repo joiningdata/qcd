@@ -12,7 +12,11 @@ import (
 	"math"
 	"os"
 	"regexp"
+	"time"
 )
+
+// 1 MB
+const maxLineLength = 1 << 20
 
 // Checksummer can checksum the contents of a data stream
 // independent of sort order. The zero-value is ready to use.
@@ -44,7 +48,9 @@ func (c *Checksummer) SetRegex(regex, replacement string) (err error) {
 
 // Sum lines read from the provided io.Reader until EOF if hit.
 func (c *Checksummer) Sum(r io.Reader) error {
-	return c.SumScanner(bufio.NewScanner(r))
+	s := bufio.NewScanner(r)
+	s.Buffer(make([]byte, maxLineLength), maxLineLength)
+	return c.SumScanner(s)
 }
 
 // SumScanner scans records from the Scanner, applying any regex and
@@ -75,7 +81,9 @@ func (c *Checksummer) sumBytes(record []byte) {
 
 // Verify lines read from the provided io.Reader until EOF if hit.
 func (c *Checksummer) Verify(r io.Reader, verify map[string]string) (bool, int, error) {
-	return c.VerifyScanner(bufio.NewScanner(r), verify)
+	s := bufio.NewScanner(r)
+	s.Buffer(make([]byte, maxLineLength), maxLineLength)
+	return c.VerifyScanner(s, verify)
 }
 
 // VerifyScanner scans records from the Scanner, applying any regex and
@@ -128,25 +136,33 @@ func (c *Checksummer) verifyBytes(record []byte) bool {
 // Info returns a collection of statistics about the Checksums
 // that were previously calculated:
 //
+//    "when_checked": UTC timestamp when the last checks were completed
 //    "content_hash": a record-oriented uniqueness checksum (independent of ordering)
 //    "records_hash": a hash of all the records observed that aids individual verification
 //    "total_records": total count of records observed
 //    "records_esterr": an estimated error rate for the record verifier
 //
 func (c *Checksummer) Info() map[string]string {
-	nkeys := float64(c.recHashes.Keys())
-	bitsize := float64(c.recHashes.Bits())
-	estError := math.Pow(1.0-math.Exp(-nkeys*float64(c.nrecs)/bitsize), nkeys)
-
-	return map[string]string{
-		"content_hash":   fmt.Sprintf("%064x", c.sum),
-		"total_records":  fmt.Sprint(c.nrecs),
-		"records_esterr": fmt.Sprint(estError),
-		"records_hash":   c.packRecs(),
+	r := map[string]string{
+		"when_checked":  time.Now().UTC().Format(time.RFC3339),
+		"content_hash":  fmt.Sprintf("%064x", c.sum),
+		"total_records": fmt.Sprint(c.nrecs),
 	}
+	if c.recHashes.Type() != DisableQuickSums {
+		nkeys := float64(c.recHashes.Keys())
+		bitsize := float64(c.recHashes.Bits())
+		estError := math.Pow(1.0-math.Exp(-nkeys*float64(c.nrecs)/bitsize), nkeys)
+
+		r["records_esterr"] = fmt.Sprint(estError)
+		r["records_hash"] = c.packRecs()
+	}
+	return r
 }
 
 func (c *Checksummer) packRecs() string {
+	if c.recHashes.Type() == DisableQuickSums {
+		return ""
+	}
 	rhb, err := c.recHashes.Export()
 	if err != nil {
 		panic(err)
@@ -161,6 +177,10 @@ func (c *Checksummer) packRecs() string {
 }
 
 func (c *Checksummer) unpackRecs(x string) error {
+	if x == "" {
+		c.recHashes = newQuickSum(DisableQuickSums)
+		return nil
+	}
 	xb, err := base64.StdEncoding.DecodeString(x)
 	if err != nil {
 		return err

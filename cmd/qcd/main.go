@@ -16,7 +16,7 @@ func main() {
 	rg := flag.String("r", "", "`regex` to mask unstable content (e.g. dates, offsets, etc.)")
 	xrepl := flag.String("x", "", "`text` to use for masked content")
 	vfile := flag.String("v", "", "verification data `filename`")
-	zsize := flag.String("z", "*", "estimated data size (S, M, L)")
+	zsize := flag.String("z", "*", "estimated data size (0, S, M, L)")
 	flag.Parse()
 
 	qcd.DefaultSumSize = qcd.QuickSumSize((*zsize)[0])
@@ -83,7 +83,7 @@ func main() {
 	}
 	for key, val := range info {
 		if len(val) > 100 {
-			val = val[:100] + "..."
+			val = val[:50] + "..." + val[len(val)-50:]
 		}
 		fmt.Fprintf(os.Stderr, "%-20s: %s\n", key, val)
 	}

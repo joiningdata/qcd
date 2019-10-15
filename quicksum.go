@@ -19,10 +19,15 @@ var (
 	MediumSumSize QuickSumSize = 'M'
 	// LargeSumSize is good for large data sets > 100k items
 	LargeSumSize QuickSumSize = 'L'
+
+	// DisableQuickSums disables the quicksum verification
+	DisableQuickSums QuickSumSize = '0'
 )
 
 func newQuickSum(t QuickSumSize) quickSum {
 	switch t {
+	case DisableQuickSums:
+		return dqs(false)
 	case SmallSumSize:
 		return new(qc16)
 	case MediumSumSize:
@@ -337,5 +342,34 @@ func (x *qc32) Has(v []byte) bool {
 			return false
 		}
 	}
+	return true
+}
+
+///////////
+
+type dqs bool
+
+func (dqs) Type() QuickSumSize {
+	return DisableQuickSums
+}
+func (dqs) Keys() int {
+	return 0
+}
+func (dqs) Bits() int {
+	return 0
+}
+func (dqs) Reset() {
+}
+func (dqs) Import([]byte) error {
+	return nil
+}
+func (dqs) Export() ([]byte, error) {
+	return nil, nil
+}
+
+func (dqs) Add([]byte) {
+
+}
+func (dqs) Has([]byte) bool {
 	return true
 }
