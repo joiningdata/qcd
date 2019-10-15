@@ -12,7 +12,6 @@ import (
 	"math"
 	"os"
 	"regexp"
-	"unsafe"
 )
 
 // Checksummer can checksum the contents of a data stream
@@ -22,13 +21,15 @@ type Checksummer struct {
 	replacer    *regexp.Regexp
 	replacement []byte
 
-	// if a sha256 hash ~= [16]uint16
-	// upper 12 bits used for index = (val>>4)
-	// lower 4 bits used for bit offset = val & 0x000F
-	recHashes [4096]uint16
+	recHashes quickSum
 	nrecs     uint64
 
 	vout io.Writer
+}
+
+// SetVerbose enables/disables verbose output.
+func (c *Checksummer) SetVerbose(w io.Writer) {
+	c.vout = w
 }
 
 // SetRegex sets a regular expression that will be
@@ -49,6 +50,10 @@ func (c *Checksummer) Sum(r io.Reader) error {
 // SumScanner scans records from the Scanner, applying any regex and
 // replacement if defined, and adding the content to the checksum.
 func (c *Checksummer) SumScanner(s *bufio.Scanner) error {
+	if c.recHashes == nil {
+		c.recHashes = newQuickSum(DefaultSumSize)
+	}
+
 	for s.Scan() {
 		c.sumBytes(s.Bytes())
 	}
@@ -61,37 +66,49 @@ func (c *Checksummer) sumBytes(record []byte) {
 	}
 
 	nh := sha256.Sum256(record)
-	c.track(nh[:])
+	c.nrecs++
+	c.recHashes.Add(nh[:])
 	xorBytes(c.sum[:], c.sum[:], nh[:])
 }
 
 //////////////////
 
 // Verify lines read from the provided io.Reader until EOF if hit.
-func (c *Checksummer) Verify(r io.Reader, verify map[string]string) (int, error) {
+func (c *Checksummer) Verify(r io.Reader, verify map[string]string) (bool, int, error) {
 	return c.VerifyScanner(bufio.NewScanner(r), verify)
 }
 
 // VerifyScanner scans records from the Scanner, applying any regex and
 // replacement if defined, and verifying the content to the checksum.
-func (c *Checksummer) VerifyScanner(s *bufio.Scanner, verify map[string]string) (int, error) {
-	c.vout = os.Stdout
+func (c *Checksummer) VerifyScanner(s *bufio.Scanner, verify map[string]string) (bool, int, error) {
 	err := c.unpackRecs(verify["records_hash"])
 	if err != nil {
-		return -1, err
+		return false, -1, err
 	}
 
+	nlines := 0
 	noverify := 0
 	for s.Scan() {
+		nlines++
 		if !c.verifyBytes(s.Bytes()) {
+			noverify++
 			if c.vout != nil {
-				fmt.Fprintln(c.vout, "UNVERIFIED: "+s.Text())
-			} else {
-				noverify++
+				fmt.Fprintf(c.vout, "UNVERIFIED: %5d: %s\n", nlines, s.Text())
 			}
 		}
 	}
-	return noverify, s.Err()
+
+	// check final content hash
+	valid := verify["content_hash"] == fmt.Sprintf("%064x", c.sum)
+	if valid {
+		fmt.Fprintln(os.Stderr, "CHECKSUM OK")
+		noverify = 0
+	} else {
+		fmt.Fprintln(os.Stderr, "CHECKSUM FAILED")
+		fmt.Fprintf(os.Stderr, "%d/%d records failed verification\n", noverify, c.nrecs)
+	}
+
+	return valid, noverify, s.Err()
 }
 
 func (c *Checksummer) verifyBytes(record []byte) bool {
@@ -100,51 +117,25 @@ func (c *Checksummer) verifyBytes(record []byte) bool {
 	}
 
 	nh := sha256.Sum256(record)
-	b := c.exists(nh[:])
+	c.nrecs++
+	b := c.recHashes.Has(nh[:])
 	xorBytes(c.sum[:], c.sum[:], nh[:])
 	return b
 }
 
 //////////////////
 
-// when x is a sha256 sum (32 bytes)
-//   this is similar to a bloom filter with k=16
-//   and bitsize = 16*4096
-func (c *Checksummer) track(x []byte) {
-	c.nrecs++
-
-	xw := *(*[]uint16)(unsafe.Pointer(&x))
-	for i := 0; i < len(x); i += 2 {
-		idx := xw[i/2] >> 4
-		offs := xw[i/2] & 0x000F
-
-		c.recHashes[idx] |= 1 << offs
-	}
-}
-
-func (c *Checksummer) exists(x []byte) bool {
-	xw := *(*[]uint16)(unsafe.Pointer(&x))
-	for i := 0; i < len(x); i += 2 {
-		idx := xw[i/2] >> 4
-		offs := xw[i/2] & 0x000F
-
-		if (c.recHashes[idx] & (1 << offs)) == 0 {
-			return false
-		}
-	}
-	return true
-}
-
-//////////////////
-
 // Info returns a collection of statistics about the Checksums
-// that were previously calculated.
+// that were previously calculated:
+//
 //    "content_hash": a record-oriented uniqueness checksum (independent of ordering)
-//    "error_estimate": an estimated error rate for the
+//    "records_hash": a hash of all the records observed that aids individual verification
+//    "total_records": total count of records observed
+//    "records_esterr": an estimated error rate for the record verifier
 //
 func (c *Checksummer) Info() map[string]string {
-	nkeys := 16.0
-	bitsize := float64(len(c.recHashes) * 16)
+	nkeys := float64(c.recHashes.Keys())
+	bitsize := float64(c.recHashes.Bits())
 	estError := math.Pow(1.0-math.Exp(-nkeys*float64(c.nrecs)/bitsize), nkeys)
 
 	return map[string]string{
@@ -156,12 +147,14 @@ func (c *Checksummer) Info() map[string]string {
 }
 
 func (c *Checksummer) packRecs() string {
-	rhb := make([]byte, 0, 4096*2)
-	for _, ux := range c.recHashes {
-		rhb = append(rhb, byte(ux>>8), byte(ux))
+	rhb, err := c.recHashes.Export()
+	if err != nil {
+		panic(err)
 	}
 	zb := &bytes.Buffer{}
-	z := gzip.NewWriter(zb)
+	z, _ := gzip.NewWriterLevel(zb, gzip.BestSpeed)
+	bb := [1]byte{byte(c.recHashes.Type())}
+	z.Write(bb[:1])
 	z.Write(rhb)
 	z.Close()
 	return base64.StdEncoding.EncodeToString(zb.Bytes())
@@ -176,8 +169,7 @@ func (c *Checksummer) unpackRecs(x string) error {
 	z, _ := gzip.NewReader(zb)
 	rhb, _ := ioutil.ReadAll(z)
 	z.Close()
-	for ri := 0; ri < 4096*2; ri += 2 {
-		c.recHashes[ri/2] = uint16(rhb[ri])<<8 | uint16(rhb[ri+1])
-	}
+	c.recHashes = newQuickSum(QuickSumSize(rhb[0]))
+	c.recHashes.Import(rhb[1:])
 	return nil
 }
