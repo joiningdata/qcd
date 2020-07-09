@@ -71,12 +71,11 @@ with open('output.csv', mode='w+') as output:
         output_writer.writerow(["ROWS","QCD (before)","QCD (after)","MD5","MD5 (sorted)","SHA","SHA (sorted)"])
         rows=100
         while rows <= 1000000:
-            #could add loop to get times for sorted on random col & shuffled rows here
-            #or change timechecksum() to return the average (would need special case for "qcd before")
-            #sort rand1, rand2, rand3, shuffle --> get average times
             print("Computing... rows: "+str(rows)+" cols: "+str(cols))
+
             if os.path.exists("qcd.txt"):
                 os.remove("qcd.txt")
+
             #timing how long it takes to write the csv data
             writeTime = time.time()
             # print(time.ctime(writeTime))
@@ -86,6 +85,10 @@ with open('output.csv', mode='w+') as output:
             m=int((writeTimeEnd-writeTime)/60)
             s=int((writeTimeEnd-writeTime)%60)
             print("Writing data: " + str(m) + "m" +str(s)+"s")
+
+            #timing how long it takes to time the checksums and write to output.csv
+            checksumTime = time.time()
+            # print(time.ctime(writeTime))
             output_writer.writerow([
                 rows,
                 timeChecksum('./qcd -v qcd.txt', removeQCD=True), #qcd before (no qcd.txt should be found)
@@ -96,6 +99,12 @@ with open('output.csv', mode='w+') as output:
                 timeChecksum('shasum -a 256'), #sha without sort
                 timeChecksum('sort -k 1 -t , data.csv | shasum -a 256')] #sha with sort
             )
+            checksumTimeEnd = time.time()
+            # print(time.ctime(writeTimeEnd))
+            m=int((checksumTimeEnd-checksumTime)/60)
+            s=int((checksumTimeEnd-checksumTime)%60)
+            print("Checksum timing: " + str(m) + "m" +str(s)+"s")
+
             rows *= 10
         output_writer.writerow([])
         output_writer.writerow([])
