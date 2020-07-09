@@ -50,7 +50,7 @@ def writeData(row, col):
             active_row = []
             num_med_text_cols = 0
             for c in range(0,col):
-                if(c == 0 or (c==1 and cols > 5)):
+                if(c == 0 or (c==1 and col > 5)):
                     active_row.append(''.join(random.choice(string.ascii_letters) for _ in range(random.randint(30,100))))
                 elif(c%4 == 0 and num_med_text_cols < 5):
                     active_row.append(''.join(random.choice(string.ascii_letters) for _ in range(random.randint(10,30))))
@@ -70,7 +70,7 @@ with open('output.csv', mode='w+') as output:
         output_writer.writerow(["COLS", cols])
         output_writer.writerow(["ROWS","QCD (before)","QCD (after)","MD5","MD5 (sorted)","SHA","SHA (sorted)"])
         rows=100
-        while rows <= 100000:
+        while rows <= 1000000:
             #could add loop to get times for sorted on random col & shuffled rows here
             #or change timechecksum() to return the average (would need special case for "qcd before")
             #sort rand1, rand2, rand3, shuffle --> get average times
