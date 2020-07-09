@@ -47,17 +47,19 @@ def writeData(row, col):
             cols.append("col"+str(c))
         data_writer.writerow(cols)
         for r in range(0,row):
-            row = []
+            active_row = []
+            num_med_text_cols = 0
             for c in range(0,col):
-                if(c%5 == 0):
-                    row.append(''.join(random.choice(string.ascii_letters) for _ in range(random.randint(30,100))))
-                elif(c%4 == 0):
-                    row.append(''.join(random.choice(string.ascii_letters) for _ in range(random.randint(10,30))))
+                if(c == 0 or (c==1 and cols > 5)):
+                    active_row.append(''.join(random.choice(string.ascii_letters) for _ in range(random.randint(30,100))))
+                elif(c%4 == 0 and num_med_text_cols < 5):
+                    active_row.append(''.join(random.choice(string.ascii_letters) for _ in range(random.randint(10,30))))
+                    num_med_text_cols += 1
                 elif(c%3 == 0):
-                    row.append(''.join(random.choice(string.ascii_letters) for _ in range(random.randint(1,5))))
+                    active_row.append(''.join(random.choice(string.ascii_letters) for _ in range(random.randint(1,5))))
                 else:
-                    row.append(random.randint(1,1000))
-            data_writer.writerow(row)
+                    active_row.append(random.randint(1,1000000))
+            data_writer.writerow(active_row)
 
 start = time.time()
 print(time.ctime(start))
