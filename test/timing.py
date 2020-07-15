@@ -32,6 +32,8 @@ def timeChecksum(method, removeQCD=False):
         except TimeoutExpired: #if process took longer than <timeout> seconds
             # print("took too long")
             total_seconds = timeout
+            #kill process
+            process.kill()
         #keep the minimum of the 3 loops)
         if min_time == None or min_time > total_seconds:
             min_time = total_seconds
