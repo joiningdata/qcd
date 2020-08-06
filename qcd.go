@@ -94,6 +94,10 @@ func (c *Checksummer) VerifyScanner(s *bufio.Scanner, verify map[string]string) 
 		return false, -1, err
 	}
 
+	if rx, ok := verify["mask_regex"]; ok && rx != "" {
+		c.SetRegex(rx, verify["mask_replacement"])
+	}
+
 	nlines := 0
 	noverify := 0
 	for s.Scan() {
@@ -141,6 +145,8 @@ func (c *Checksummer) verifyBytes(record []byte) bool {
 //    "records_hash": a hash of all the records observed that aids individual verification
 //    "total_records": total count of records observed
 //    "records_esterr": an estimated error rate for the record verifier
+//    "mask_regex": regular rexpression used to identify and mask non-normative values
+//    "mask_replacement": replacement text to use for masked values
 //
 func (c *Checksummer) Info() map[string]string {
 	r := map[string]string{
@@ -155,6 +161,10 @@ func (c *Checksummer) Info() map[string]string {
 
 		r["records_esterr"] = fmt.Sprint(estError)
 		r["records_hash"] = c.packRecs()
+	}
+	if c.replacer != nil {
+		r["mask_regex"] = c.replacer.String()
+		r["mask_replacement"] = string(c.replacement)
 	}
 	return r
 }
