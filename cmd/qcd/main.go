@@ -7,6 +7,8 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/joiningdata/qcd"
 )
@@ -15,9 +17,32 @@ func main() {
 	showVerbose := flag.Bool("e", false, "enable verbose errors")
 	rg := flag.String("r", "", "`regex` to mask unstable content (e.g. dates, offsets, etc.)")
 	xrepl := flag.String("x", "", "`text` to use for masked content")
-	vfile := flag.String("v", "", "verification data `filename`")
+	vfile := flag.String("v", "%s.qcd", "verification data `filename` [%s replaced with input name]")
 	zsize := flag.String("z", "*", "estimated data size (0, S, M, L)")
 	flag.Parse()
+
+	var src io.Reader = os.Stdin
+	if fn := flag.Arg(0); fn != "" {
+		f, err := os.Open(fn)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening source file: %s\n", err.Error())
+			os.Exit(-4)
+		}
+		defer f.Close()
+		src = f
+
+		if strings.Contains(*vfile, "%s") {
+			if strings.HasPrefix(*vfile, "%s") {
+				// full path replacement
+				*vfile = fn + strings.TrimPrefix(*vfile, "%s")
+			} else {
+				bn := filepath.Base(fn)
+				*vfile = fmt.Sprintf(*vfile, bn)
+			}
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "Reading from standard input...")
+	}
 
 	qcd.DefaultSumSize = qcd.QuickSumSize((*zsize)[0])
 
@@ -27,6 +52,7 @@ func main() {
 		doVerify = true
 		vb, err := ioutil.ReadFile(*vfile)
 		if err == nil {
+			fmt.Fprintln(os.Stderr, "Reading verification data from", *vfile)
 			err = json.Unmarshal(vb, &vdata)
 		}
 		if err != nil {
@@ -52,10 +78,9 @@ func main() {
 	}
 
 	if doVerify {
-		ok, nb, err := ck.Verify(os.Stdin, vdata)
+		ok, nb, err := ck.Verify(src, vdata)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "unable to verify", err)
-			os.Exit(-3)
 			os.Exit(-3)
 		}
 		if !ok && nb == 0 {
@@ -64,16 +89,17 @@ func main() {
 		os.Exit(nb)
 	}
 
-	err := ck.Sum(os.Stdin)
+	err := ck.Sum(src)
 	if err != nil && err != io.EOF {
 		fmt.Fprintf(os.Stderr, "an error occured: %s", err.Error())
 		os.Exit(-4)
 	}
 
 	info := ck.Info()
-	if *vfile != "" {
+	if *vfile != "" && !strings.Contains(*vfile, "%s") {
 		f, err := os.Create(*vfile)
 		if err == nil {
+			fmt.Fprintln(os.Stderr, "Writing verification data to", *vfile)
 			err = json.NewEncoder(f).Encode(info)
 		}
 		if err != nil {
