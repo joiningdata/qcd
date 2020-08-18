@@ -1,7 +1,7 @@
 package main
 
 import (
-	"context"
+	"bytes"
 	"encoding/csv"
 	"fmt"
 	"io"
@@ -9,7 +9,6 @@ import (
 	"math/rand"
 	"os"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -48,23 +47,21 @@ func fileExists(filename string) bool {
 
 // performs 3 rounds of timing the provided metho and returns the minimum recorded time in seconds
 func timeChecksum(method string, removeQCD bool) string {
-	//timeout after 10 seconds
-	timeout, err := time.ParseDuration("10s")
-	if err != nil {
-		log.Fatal("Error parsing timeout")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
 	var minTime time.Duration
-	var currentTime time.Duration
+	var elapsedTime time.Duration
 
-	fmt.Println(method)
 	//time the method 3 times
 	for i := 0; i < 3; i++ {
 		//create the subprocess
-		methodT := strings.Join([]string{"time ", method}, "")
-		process := exec.CommandContext(ctx, "bash", "-c", methodT)
+		var process *exec.Cmd
+		//if piping a sort, use bash shell
+		if strings.Contains(method, "|") {
+			process = exec.Command("bash", "-c", method)
+		} else {
+			//otherwise don't use a shell (and use io.Copy to pipe)
+			args := strings.Split(method, " ")
+			process = exec.Command(args[0], args[1:]...)
+		}
 
 		//only remove qcd if doing "before" timing
 		if removeQCD && fileExists("qcd.txt") {
@@ -74,72 +71,69 @@ func timeChecksum(method string, removeQCD bool) string {
 		//pipe from stdin
 		stdin, err := process.StdinPipe()
 		if err != nil {
-			log.Fatal(err)
+			log.Fatal("Error getting pipe from stdin: ", err)
 		}
 
 		//write data.csv to stdin so process can read it
 		file, err := os.Open("data.csv")
 		if err != nil {
-			log.Fatal("Can't open data.csv")
+			log.Fatal("Can't open data.csv: ", err)
 		}
 
-		fileInfo, err := file.Stat()
+		_, err = file.Stat()
 		if err != nil {
-			log.Fatal("Error getting file info")
+			log.Fatal("Error getting file info: ", err)
 		}
-		fmt.Println(fileInfo.Size())
-		// I don't know why, but for some reason this line is hanging on the second iteration (1000 rows)...
-		// I originally implemented it using io.Copy (without byte limit)
-		// but it was hanging, so I tried putting this limit in and its still hanging (even though file size > 100000 bytes)
-		_, err = io.CopyN(stdin, file, 100000)
-		if err != nil && err != io.EOF {
-			log.Fatal("Error writing from file to stdin pipe: ", err)
+
+		//get output with bytes buffer
+		var b bytes.Buffer
+		process.Stdout = &b
+		process.Stderr = &b
+
+		//start timing
+		start := time.Now()
+
+		//start the process
+		err = process.Start()
+		if err != nil {
+			log.Fatal("Error with Command: ", err)
 		}
-		fmt.Println("HERE!!!")
+
+		//get input to command from data.csv file pipe (if not using bash shell)
+		if !strings.Contains(method, "|") {
+			_, err = io.Copy(stdin, file)
+			if err != nil && err != io.EOF {
+				// May be triggered by timeout
+				fmt.Println(method)
+				log.Fatal("Error writing from file to stdin pipe: ", err)
+			}
+		}
+
+		//close file and stdin
 		file.Close()
 		stdin.Close()
 
-		//run the process and get the time
-		out, err := process.CombinedOutput()
+		//wait for process to finish
+		err = process.Wait()
 		if err != nil {
-			log.Fatal(err)
+			log.Fatal("Error finishing the process: ", err)
 		}
 
-		//timeout exceeded
-		if ctx.Err() == context.DeadlineExceeded {
-			fmt.Println("Command timed out")
-			currentTime = timeout
-		}
-
-		//command finished, get the real time
-		// fmt.Println("method: ", method)
+		//get output
+		// out := b.Bytes()
 		// fmt.Println(string(out))
 
-		//convert the output to a Duration
-		re := regexp.MustCompile(`real\t(.*?)\n`)
-		realtime := re.Find(out)[5:]
-		re = regexp.MustCompile(`(.*?m)`)
-		minutes := re.Find(realtime)
-		minutes = minutes[:len(minutes)-1]
-		re = regexp.MustCompile(`m(.*?)\.`)
-		seconds := re.Find(realtime)
-		seconds = seconds[1 : len(seconds)-1]
-		re = regexp.MustCompile(`\.(.*?)s`)
-		milliseconds := re.Find(realtime)
-		milliseconds = milliseconds[1 : len(milliseconds)-1]
+		//command finished, get the real time
+		elapsedTime = time.Now().Sub(start)
 
-		//get duration of current time
-		t := strings.Join([]string{string(minutes), "m", string(seconds), "s", string(milliseconds), "ms"}, "")
-		currentTime, err = time.ParseDuration(string(t))
-		if err != nil {
-			log.Fatal("Error parsing time")
+		// if minTime is not set or is greater than elapsedTime
+		if minTime == 0 || elapsedTime < minTime {
+			minTime = elapsedTime
 		}
-		// if minTime is not set or is greater than currentTime
-		if minTime == 0 || currentTime < minTime {
-			minTime = currentTime
-		}
+
 	}
-	return strconv.FormatFloat(minTime.Seconds(), 'f', 6, 32)
+	fmt.Println("\t  MinTime: ", minTime, "\t(", method, ")")
+	return strconv.FormatFloat(minTime.Seconds(), 'f', 6, 64)
 }
 
 //open and write random data to data.csv given the number of rows and cols
@@ -220,7 +214,7 @@ func main() {
 		outputwriter.Flush()
 		//for rows *10 until 1 million
 		rows := 100
-		for rows <= 10000 {
+		for rows <= 1000000 {
 			//print # rows and cols
 			fmt.Println("Computing... rows: ", rows, " cols: ", cols)
 
@@ -232,22 +226,23 @@ func main() {
 			//timing for writing data
 			writeTime := time.Now()
 			writeData(rows, cols)
-			fmt.Println("\tTime to write data: ", time.Since(writeTime))
+			elapsedWriteTime := time.Now().Sub(writeTime)
+			fmt.Println("\tTime to write data: ", elapsedWriteTime)
 			//timing all checksums
 			checksumTime := time.Now()
 			times := []string{
 				strconv.Itoa(rows),
 				timeChecksum("./qcd -v qcd.txt", true),                         //qcd before (no qcd.txt should be found)
 				timeChecksum("./qcd -v qcd.txt", false),                        //qcd after (checksum ok)
-				timeChecksum("md5", false),                                     //md5 without time it would take to pipe the sort
-				timeChecksum("sort -k 1 -t , data.csv | md5", false),           //md5 with time to pipe the sort
+				timeChecksum("md5", false),                                     //md5 without the time it would take to pipe the sort
+				timeChecksum("sort -k 1 -t , data.csv | md5", false),           //md5 with the time to pipe the sort
 				timeChecksum("shasum -a 256", false),                           //sha without sort
 				timeChecksum("sort -k 1 -t , data.csv | shasum -a 256", false), //sha with sort
 			}
 			outputwriter.Write(times)
 			outputwriter.Flush()
-
-			fmt.Println("\tTime for checksums: ", time.Since(checksumTime))
+			elapsedChecksum := time.Now().Sub(checksumTime)
+			fmt.Println("\tTime for checksums: ", elapsedChecksum)
 			fmt.Println("\t", times)
 			rows = rows * 10
 		}
@@ -258,5 +253,6 @@ func main() {
 	fmt.Println("Done!")
 	// os.Remove("data.csv")
 	os.Remove("qcd.txt")
-	fmt.Println("\nTotal time: ", time.Since(start))
+	elapsed := time.Now().Sub(start)
+	fmt.Println("\nTotal time: ", elapsed)
 }
