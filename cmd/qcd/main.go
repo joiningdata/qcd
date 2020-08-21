@@ -10,6 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	"compress/bzip2"
+	"compress/gzip"
+
+	"github.com/ulikunitz/xz"
+
 	"github.com/joiningdata/qcd"
 )
 
@@ -30,6 +35,30 @@ func main() {
 		}
 		defer f.Close()
 		src = f
+
+		if strings.HasSuffix(fn, ".gz") {
+			zr, err := gzip.NewReader(f)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: filename looks like gzip but failed to open: %s\n", err.Error())
+			} else {
+				src = zr
+			}
+			fn = strings.TrimSuffix(fn, ".gz")
+		}
+		if strings.HasSuffix(fn, ".bz2") {
+			// FIXME: no way to detect errors until we read...
+			src = bzip2.NewReader(f)
+			fn = strings.TrimSuffix(fn, ".bz2")
+		}
+		if strings.HasSuffix(fn, ".xz") {
+			zr, err := xz.NewReader(f)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: filename looks like xz but failed to open: %s\n", err.Error())
+			} else {
+				src = zr
+			}
+			fn = strings.TrimSuffix(fn, ".xz")
+		}
 
 		if strings.Contains(*vfile, "%s") {
 			if strings.HasPrefix(*vfile, "%s") {
